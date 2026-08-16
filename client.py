@@ -7,7 +7,10 @@ only weight updates to the server — raw traffic never leaves the client
 """
 from __future__ import annotations
 
+import os
+
 import flwr as fl
+import psutil
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -32,6 +35,13 @@ class IDSClient(fl.client.NumPyClient):
         self.device = device
         self.local_epochs = local_epochs
         self.criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
+        # Evaluation must NOT reuse the training class weights: a client's
+        # weight vector is zero for any class absent from ITS local
+        # training split. If a validation batch happens to contain only
+        # such classes, a weighted CrossEntropyLoss divides by zero and
+        # returns NaN — which then poisons the server's aggregated loss
+        # for the whole round. Evaluation loss uses unweighted CE instead.
+        self.eval_criterion = nn.CrossEntropyLoss()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
 
     def get_parameters(self, config):
@@ -46,6 +56,10 @@ class IDSClient(fl.client.NumPyClient):
     def fit(self, parameters, config):
         self.set_parameters(parameters)
         self.model.train()
+
+        process = psutil.Process(os.getpid())
+        peak_ram_mb = process.memory_info().rss / (1024 * 1024)
+
         for _ in range(self.local_epochs):
             for xb, yb in self.train_loader:
                 xb, yb = xb.to(self.device), yb.to(self.device)
@@ -53,7 +67,14 @@ class IDSClient(fl.client.NumPyClient):
                 loss = self.criterion(self.model(xb), yb)
                 loss.backward()
                 self.optimizer.step()
-        return self.get_parameters(config={}), len(self.train_loader.dataset), {}
+                current_rss = process.memory_info().rss / (1024 * 1024)
+                peak_ram_mb = max(peak_ram_mb, current_rss)
+
+        return (
+            self.get_parameters(config={}),
+            len(self.train_loader.dataset),
+            {"peak_ram_mb": peak_ram_mb},
+        )
 
     def evaluate(self, parameters, config):
         self.set_parameters(parameters)
@@ -63,7 +84,7 @@ class IDSClient(fl.client.NumPyClient):
             for xb, yb in self.val_loader:
                 xb, yb = xb.to(self.device), yb.to(self.device)
                 logits = self.model(xb)
-                loss_total += self.criterion(logits, yb).item() * len(yb)
+                loss_total += self.eval_criterion(logits, yb).item() * len(yb)
                 correct += (logits.argmax(dim=1) == yb).sum().item()
                 n += len(yb)
         return loss_total / n, n, {"accuracy": correct / n}

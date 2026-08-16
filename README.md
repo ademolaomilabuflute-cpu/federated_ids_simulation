@@ -21,8 +21,10 @@ non-IID Dirichlet partitioning (α = 0.5) across 5 simulated edge clients.
 | `preprocessing.py`     | Cleaning, one-hot encoding, min-max scaling, class weighting (3.3–3.4) |
 | `partition.py`          | Dirichlet non-IID client partitioning (Section 4)                     |
 | `client.py`               | Flower client — local training/evaluation on one simulated gateway    |
-| `server.py`                 | FedAvg aggregation strategy                                            |
-| `simulate.py`                 | Entry point that ties everything together                             |
+| `server.py`                 | FedAvg strategy that retains the final trained global weights          |
+| `metrics.py`                  | Per-class precision/recall/F1 evaluation (Table 4)                    |
+| `simulate.py`                   | Entry point — runs training, then evaluates the actual trained model  |
+| `ablation.py`                     | Sweeps client count and Dirichlet alpha (Table 6, Section 5.5)        |
 
 ## Setup
 
@@ -33,12 +35,26 @@ pip install -r requirements.txt
 ## Running
 
 ```bash
+# Full run on real data
 python simulate.py --data-path /path/to/EdgeIIoT_preprocessed.csv
+
+# Pipeline smoke test only, on random synthetic data — NEVER report these numbers
+python simulate.py --synthetic --num-rounds 2
+
+# Client-count / heterogeneity ablation sweep (Table 6)
+python ablation.py --data-path /path/to/EdgeIIoT_preprocessed.csv
 ```
 
 Download Edge-IIoTset from its [official source](https://ieeexplore.ieee.org/document/9751703)
-and adjust the categorical column names in `simulate.py::load_and_prepare`
-if your copy's column headers differ.
+and adjust the categorical column names in `simulate.py::load_real_data`
+if your copy's column headers differ. Missing or unreachable real data is
+never silently substituted with synthetic data — `--data-path` is required
+unless `--synthetic` is passed explicitly.
+
+Each run writes `loss_history.csv` (real per-round evaluation loss) and
+`per_class_report.csv` (per-class precision/recall/F1/support) to the
+output directory, so reported figures and plots are regenerable from a
+real run rather than transcribed by hand.
 
 ## On reproducibility
 
